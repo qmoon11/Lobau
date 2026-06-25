@@ -1,0 +1,37 @@
+#Bin ITS and 18s as OTUs
+#activate vsearch
+conda activate vsearch_env
+
+
+#bin ITS at 98%
+vsearch --cluster_fast DADA2_ASVs_combined_ITS.fna --id 0.98 --strand plus \
+  --centroids OTU98_centroids.fna --uc OTU98_map.uc --relabel OTU98_ --threads 8
+
+#all chimera already removed
+---------------------------------------------------------------------------------------
+#results
+2495532 nt in 7082 seqs, min 54, max 448, avg 352
+Clustered 3541 ASV sequences from DADA2_ASVs.fna at 98% identity (plus strand).
+Output:
+OTU98_centroids.fna = 2800 OTU representative sequences
+OTU98_map.uc = mapping of each ASV to an OTU
+
+Results summary:
+2800 OTUs
+2386 singleton ASVs (67.4% of ASVs)
+
+
+
+
+
+---------------------------------------------------------------------------------------
+#bin 18s at 99%
+#all chimera already removed
+
+vsearch --cluster_fast DADA2_ASVs.fna --id 0.99 --strand plus \
+  --centroids OTU99_centroids.fna --uc OTU99_map.uc --relabel OTU99_ --threads 8
+
+#results
+904937 nt in 6663 seqs, min 100, max 188, avg 136
+Clusters: 6296 Size min 1, max 5, avg 1.1
+Singletons: 5964, 89.5% of seqs, 94.7% of clusters
