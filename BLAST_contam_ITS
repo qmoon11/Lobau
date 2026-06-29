@@ -1,0 +1,71 @@
+#BLAST Lobau ITS OTU against UNITE for use with ClassifyITS
+#################################################################################
+Download latest UNITE All Euk Database
+#################################################################################
+
+#I have already done this in another directory so I will just access the unzipped FASTA reference
+
+#################################################################################
+Download BLAST
+#################################################################################
+wget https://ftp.ncbi.nlm.nih.gov/blast/executables/blast+/LATEST/ncbi-blast-2.17.0+-x64-linux.tar.gz
+tar -xzf ncbi-blast-2.17.0+-x64-linux.tar.gz
+export PATH=$PWD/ncbi-blast-2.17.0+/bin:$PATH
+
+#################################################################################
+Build a BLAST database
+#################################################################################
+mkdir -p BLAST
+
+makeblastdb \
+  -in /scratch/tyjames_root/tyjames0/qmoon/AgeDiversityDistance/MoonITS2/UNITE/euk/sh_general_release_dynamic_s_all_19.02.2025.fasta \
+  -dbtype nucl \
+  -out BLAST/uniteITSEuk_db
+
+
+#################################################################################
+Run MegaBLAST search
+#################################################################################
+
+blastn \
+  -task megablast \
+  -query OTU98_centroids_ITS.fna \
+  -db BLAST/uniteITSEuk_db \
+  -out BLAST/megablast_ITS2_ClassifyITS.tsv \
+  -word_size 28 \
+  -reward 1 \
+  -penalty -2 \
+  -gapopen 0 \
+  -gapextend 2 \
+  -max_target_seqs 10 \
+  -outfmt "6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore stitle" \
+  -num_threads 8
+
+
+#################################################################################
+sSearch for human contamination as suggested in ClassifyITS
+#################################################################################
+makeblastdb \
+    -in potential_contamination.fasta \
+    -dbtype nucl \
+    -out contam_db
+
+
+
+
+    blastn \
+    -task megablast \
+    -query OTU98_centroids_ITS.fna  \
+    -db contam_db \
+    -out blast_contam.tsv \
+    -word_size 28 \
+    -reward 1 \
+    -penalty -2 \
+    -gapopen 0 \
+    -gapextend 2 \
+    -max_target_seqs 10 \
+    -outfmt "6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore stitle" \
+    -num_threads 8
+
+
+    awk '$3 >= 99.8 && $4 > 70 ' blast_contam.tsv > filtered_human_contaminants_ITS.tsv
