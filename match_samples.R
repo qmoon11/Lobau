@@ -1,44 +1,19 @@
-## ============================================================
-## LoBAU JMF sample metadata + environmental metadata workflow
-##
-## This script:
-## 1. Reads two JMF Excel files
-## 2. Keeps only selected JMF columns
-## 3. Adds:
-##      - dataset
-##      - site
-##      - act: dna/rna
-## 4. Handles mixed date formats:
-##      - 2021/04/06
-##      - 2022-03-07
-## 5. Combines both JMF files into one dataframe
-## 6. Reads environmental metadata from lobau_data_combined.xlsx
-## 7. Removes metadata rows where sample_type == "well_water"
-## 8. Joins metadata to JMF samples by Date + site
-## 9. Saves final outputs
-## ============================================================
 
-
-## -------------------------
-## 0) Set directory and load packages
-## -------------------------
-
-setwd("/Users/quinnmoon/Downloads/Lobau_18S_16S_ITS/")
-
+library(readr)
 library(readxl)
 library(dplyr)
 library(lubridate)
 library(tidyr)
 
+## -------------------------
+## Set directory
+## -------------------------
+
+setwd("/Users/quinnmoon/Downloads/Lobau_18S_16S_ITS/")
+
 
 ## -------------------------
-## 1) General helper: parse mixed date formats
-##
-## Handles:
-## - Date objects
-## - POSIX date-times
-## - Excel numeric dates
-## - character dates like "2021/04/06" or "2022-03-07"
+## Helper: parse mixed date formats
 ## -------------------------
 
 parse_mixed_date <- function(x) {
@@ -62,35 +37,79 @@ parse_mixed_date <- function(x) {
 
 
 ## -------------------------
-## 2) Helper: process one JMF file
-##
-## Keeps:
-## - JMF sample ID
-## - Sample description
-## - Date
-## - Forward primer
-## - Reverse primer
-##
-## Adds:
-## - dataset
-## - site
-## - act
+## Helper: read JMF file
+## Handles .csv and .xlsx
 ## -------------------------
 
-process_jmf <- function(file, act_vector, dataset_name) {
+read_jmf_file <- function(file) {
   
-  raw_df <- read_excel(file)
+  if (grepl("\\.xlsx$", file, ignore.case = TRUE)) {
+    read_excel(file)
+  } else if (grepl("\\.csv$", file, ignore.case = TRUE)) {
+    read_csv(file, show_col_types = FALSE)
+  } else {
+    stop("File must be .csv or .xlsx: ", file)
+  }
+}
+
+
+## -------------------------
+## Helper: read isotope file
+## Handles .tsv, .txt, .csv, and .xlsx
+## -------------------------
+
+read_isotope_file <- function(file) {
+  
+  if (grepl("\\.xlsx$", file, ignore.case = TRUE)) {
+    read_excel(file)
+  } else if (grepl("\\.csv$", file, ignore.case = TRUE)) {
+    read_csv(file, show_col_types = FALSE)
+  } else if (grepl("\\.tsv$|\\.txt$", file, ignore.case = TRUE)) {
+    read_tsv(file, show_col_types = FALSE)
+  } else {
+    stop("Isotope file must be .tsv, .txt, .csv, or .xlsx: ", file)
+  }
+}
+
+
+## -------------------------
+## Helper: process one JMF file
+##
+## Blank detection:
+## A row is marked as Blank if ANY cell contains "blank",
+## case-insensitive.
+##
+## Keeps only:
+## - ESW
+## - D15
+## - Blank
+##
+## Primer columns are intentionally dropped.
+## -------------------------
+
+process_jmf_file <- function(file, act_vector, dataset_name) {
+  
+  raw_df <- read_jmf_file(file)
   
   ## Remove rows that are completely blank
   raw_df <- raw_df %>%
     filter(!if_all(everything(), is.na))
   
-  ## Make sure dna/rna assignment vector matches number of rows
+  ## Detect blank rows if ANY cell contains "blank"
+  raw_df <- raw_df %>%
+    mutate(
+      row_contains_blank = if_any(
+        everything(),
+        ~ !is.na(.x) & grepl("blank", as.character(.x), ignore.case = TRUE)
+      )
+    )
+  
+  ## Make sure dna/rna assignment vector matches number of rows BEFORE site filtering
   if (nrow(raw_df) != length(act_vector)) {
     stop(
       paste0(
         "Row count mismatch for ", file, "\n",
-        "Rows in file: ", nrow(raw_df), "\n",
+        "Rows in file after removing completely blank rows: ", nrow(raw_df), "\n",
         "Length of act_vector: ", length(act_vector), "\n"
       )
     )
@@ -101,40 +120,31 @@ process_jmf <- function(file, act_vector, dataset_name) {
       `JMF sample ID`,
       `Sample description`,
       Date,
-      `Forward primer`,
-      `Reverse primer`
+      row_contains_blank
     ) %>%
     mutate(
-      ## Standardize date format
       Date = parse_mixed_date(Date),
       
-      ## Trim sample description before checking prefixes
-      Sample_desc_trimmed = trimws(`Sample description`),
+      Sample_desc_trimmed = trimws(as.character(`Sample description`)),
       
-      ## Assign site from beginning of Sample description
       site = case_when(
-        startsWith(Sample_desc_trimmed, "Blank") ~ "Blank",
-        startsWith(Sample_desc_trimmed, "D05")   ~ "D05",
-        startsWith(Sample_desc_trimmed, "D5")    ~ "D05",
-        startsWith(Sample_desc_trimmed, "D10")   ~ "D10",
-        startsWith(Sample_desc_trimmed, "D15")   ~ "D15",
-        startsWith(Sample_desc_trimmed, "ESW")   ~ "ESW",
-        TRUE                                     ~ NA_character_
+        row_contains_blank ~ "Blank",
+        startsWith(Sample_desc_trimmed, "ESW") ~ "ESW",
+        startsWith(Sample_desc_trimmed, "D15") ~ "D15",
+        TRUE ~ NA_character_
       ),
       
-      ## Add dna/rna assignment and dataset name
       act = act_vector,
       dataset = dataset_name
     ) %>%
+    filter(site %in% c("ESW", "D15", "Blank")) %>%
     select(
       dataset,
       `JMF sample ID`,
       `Sample description`,
       Date,
       site,
-      act,
-      `Forward primer`,
-      `Reverse primer`
+      act
     )
   
   return(processed_df)
@@ -142,38 +152,12 @@ process_jmf <- function(file, act_vector, dataset_name) {
 
 
 ## -------------------------
-## 3) Process first JMF file
+## Process ESW/D15 JMF file
 ##
-## File:
-## jmf_2302_05_d05_d10.xlsx
-##
-## Assignment:
-## rows 1-50   = dna
-## rows 51-102 = rna
+## This can be .xlsx or .csv
 ## -------------------------
 
-jmf_2302_05_d05_d10 <- process_jmf(
-  file = "jmf_2302_05_d05_d10.xlsx",
-  act_vector = c(
-    rep("dna", 50),
-    rep("rna", 52)
-  ),
-  dataset_name = "jmf_2302_05_d05_d10"
-)
-
-
-## -------------------------
-## 4) Process second JMF file
-##
-## File:
-## jmf_2301_09_esw_d15.xlsx
-##
-## Assignment:
-## rows 1-78   = rna
-## rows 79-153 = dna
-## -------------------------
-
-jmf_2301_09_esw_d15 <- process_jmf(
+jmf_esw_d15 <- process_jmf_file(
   file = "jmf_2301_09_esw_d15.xlsx",
   act_vector = c(
     rep("rna", 78),
@@ -184,38 +168,31 @@ jmf_2301_09_esw_d15 <- process_jmf(
 
 
 ## -------------------------
-## 5) Combine both JMF dataframes
+## Main JMF dataframe
 ## -------------------------
 
-jmf_big_df <- bind_rows(
-  jmf_2302_05_d05_d10,
-  jmf_2301_09_esw_d15
-)
+jmf_big_df <- jmf_esw_d15
 
 
 ## -------------------------
-## 6) JMF sanity checks
+## JMF sanity checks
 ## -------------------------
 
-cat("Rows in jmf_2302_05_d05_d10:", nrow(jmf_2302_05_d05_d10), "\n")
-cat("Rows in jmf_2301_09_esw_d15:", nrow(jmf_2301_09_esw_d15), "\n")
+cat("Rows in jmf_esw_d15:", nrow(jmf_esw_d15), "\n")
 cat("Rows in combined jmf_big_df:", nrow(jmf_big_df), "\n\n")
 
-## Count samples by dataset, site, and act
 site_act_counts <- jmf_big_df %>%
   count(dataset, site, act) %>%
   arrange(dataset, site, act)
 
 print(site_act_counts)
 
-## Check rows where site could not be assigned
 missing_site <- jmf_big_df %>%
   filter(is.na(site))
 
 cat("\nRows with missing site:", nrow(missing_site), "\n")
 print(missing_site, n = Inf)
 
-## Check rows where Date could not be parsed
 failed_dates <- jmf_big_df %>%
   filter(is.na(Date))
 
@@ -224,18 +201,7 @@ print(failed_dates, n = Inf)
 
 
 ## -------------------------
-## 7) Optional check:
-##    For each Date, do we have all site x act combinations?
-##
-## Expected non-blank combinations:
-## - ESW dna
-## - ESW rna
-## - D05 dna
-## - D05 rna
-## - D10 dna
-## - D10 rna
-## - D15 dna
-## - D15 rna
+## Check ESW/D15 site x act combinations
 ## -------------------------
 
 presence_df <- jmf_big_df %>%
@@ -245,7 +211,7 @@ presence_df <- jmf_big_df %>%
     site_act = paste(site, toupper(act))
   ) %>%
   filter(
-    site %in% c("ESW", "D05", "D10", "D15"),
+    site %in% c("ESW", "D15"),
     act %in% c("dna", "rna")
   ) %>%
   distinct(Date, site_act) %>%
@@ -254,8 +220,6 @@ presence_df <- jmf_big_df %>%
     Date,
     site_act = c(
       "ESW DNA", "ESW RNA",
-      "D05 DNA", "D05 RNA",
-      "D10 DNA", "D10 RNA",
       "D15 DNA", "D15 RNA"
     ),
     fill = list(present = FALSE)
@@ -280,12 +244,12 @@ print(missing_presence, n = Inf)
 
 
 ## -------------------------
-## 8) Save combined JMF-only dataframe
+## Save JMF-only dataframe
 ## -------------------------
 
 write.csv(
   jmf_big_df,
-  "jmf_big_df_combined.csv",
+  "jmf_esw_d15_combined.csv",
   row.names = FALSE
 )
 
@@ -293,34 +257,23 @@ write.csv(
 ## ============================================================
 ## Environmental metadata matching
 ##
-## Metadata file:
-## lobau_data_combined.xlsx
-##
-## Matching columns:
-## - JMF Date  -> metadata date_yyyy_mm_dd
-## - JMF site  -> metadata well_id, standardized to ESW/D05/D10/D15
-##
-## Metadata exclusion:
-## - remove rows where sample_type == "well_water"
-##
-## Blanks:
-## - kept in final table
-## - usually do not match metadata, so metadata columns remain NA
+## IMPORTANT:
+## - Metadata may contain sites other than ESW/D15.
+## - We keep ALL metadata rows after optional well_water filtering.
+## - If a metadata row does not match a JMF sample,
+##   JMF columns will be NA.
+## - This is done with full_join().
 ## ============================================================
-
-
-## -------------------------
-## 9) Read metadata
-## -------------------------
 
 metadata_raw <- read_excel("lobau_data_combined.xlsx")
 
 
 ## -------------------------
-## 10) Remove well_water metadata rows
+## Remove well_water metadata rows
 ##
-## This keeps pumped groundwater and any other non-well_water rows.
-## If sample_type is NA, this keeps those rows too.
+## If you truly want every metadata row including well_water,
+## comment out this block and set:
+## metadata_filtered <- metadata_raw
 ## -------------------------
 
 metadata_filtered <- metadata_raw %>%
@@ -328,35 +281,31 @@ metadata_filtered <- metadata_raw %>%
 
 
 ## -------------------------
-## 11) Standardize metadata Date and site
+## Standardize metadata Date and site
+##
+## Keeps all metadata sites.
 ## -------------------------
 
 metadata_for_join <- metadata_filtered %>%
   mutate(
-    ## Standardize metadata date to same Date class as JMF Date
     Date = parse_mixed_date(date_yyyy_mm_dd),
     
-    ## Standardize metadata well/site IDs
     well_id_trimmed = trimws(as.character(well_id)),
     
     site = case_when(
+      grepl("blank", well_id_trimmed, ignore.case = TRUE) ~ "Blank",
       startsWith(well_id_trimmed, "ESW") ~ "ESW",
       startsWith(well_id_trimmed, "D05") ~ "D05",
       startsWith(well_id_trimmed, "D5")  ~ "D05",
       startsWith(well_id_trimmed, "D10") ~ "D10",
       startsWith(well_id_trimmed, "D15") ~ "D15",
-      TRUE                               ~ well_id_trimmed
+      TRUE ~ well_id_trimmed
     )
   )
 
 
 ## -------------------------
-## 12) Check metadata join keys
-##
-## Ideally there should be only one metadata row per Date + site
-## after removing well_water.
-##
-## If duplicates exist, left_join may duplicate JMF rows.
+## Check metadata duplicate Date/site keys
 ## -------------------------
 
 metadata_duplicate_keys <- metadata_for_join %>%
@@ -368,46 +317,135 @@ print(metadata_duplicate_keys, n = Inf)
 
 if (nrow(metadata_duplicate_keys) > 0) {
   cat("\nWarning: Some metadata Date/site keys are duplicated.\n")
-  cat("The join may create duplicate JMF sample rows.\n")
+  cat("The join may create duplicate rows.\n")
 }
 
 
 ## -------------------------
-## 13) Join JMF samples to metadata by Date + site
+## FULL JOIN JMF samples to environmental metadata
 ##
-## left_join keeps all JMF samples.
-## Metadata columns are appended where Date + site match.
+## full_join keeps:
+## - JMF rows with matching metadata
+## - JMF rows without metadata
+## - metadata rows without JMF samples
 ## -------------------------
 
-jmf_with_metadata <- jmf_big_df %>%
-  left_join(
-    metadata_for_join,
-    by = c("Date", "site"),
-    suffix = c("", "_metadata")
+jmf_with_metadata <- full_join(
+  jmf_big_df,
+  metadata_for_join,
+  by = c("Date", "site"),
+  suffix = c("", "_metadata")
+)
+
+
+## ============================================================
+## Isotope metadata matching
+##
+## IMPORTANT:
+## - Isotope file may contain sites other than ESW/D15.
+## - Keep all isotope rows.
+## - If isotope rows do not match JMF/environmental metadata,
+##   JMF/environmental columns will be NA.
+## ============================================================
+
+
+## -------------------------
+## Read isotope file
+##
+## Update filename if needed.
+## -------------------------
+
+isotopes_raw <- read_isotope_file("lobau_isotopes_july2020_to_july2021.xlsx")
+
+
+## -------------------------
+## Standardize isotope Date and site
+##
+## Keeps all isotope sites.
+## -------------------------
+
+isotopes_for_join <- isotopes_raw %>%
+  mutate(
+    Date = parse_mixed_date(sampling_date_mm_dd_yyyy),
+    
+    sample_id_trimmed = trimws(as.character(sample_id)),
+    
+    site = case_when(
+      startsWith(sample_id_trimmed, "ESW") ~ "ESW",
+      startsWith(sample_id_trimmed, "D05") ~ "D05",
+      startsWith(sample_id_trimmed, "D5")  ~ "D05",
+      startsWith(sample_id_trimmed, "D10") ~ "D10",
+      startsWith(sample_id_trimmed, "D15") ~ "D15",
+      TRUE ~ sub("_.*$", "", sample_id_trimmed)
+    )
+  ) %>%
+  rename(
+    isotope_sample_id = sample_id,
+    isotope_sampling_date = sampling_date_mm_dd_yyyy,
+    isotope_sample_type = sample_type
+  ) %>%
+  select(
+    Date,
+    site,
+    isotope_sample_id,
+    isotope_sampling_date,
+    isotope_sample_type,
+    dO18_permil,
+    stdev_dO18_permil,
+    dH2_permil,
+    stdev_dH2_permil,
+    d_excess_permil
   )
 
 
 ## -------------------------
-## 14) Post-join sanity checks
+## Check isotope duplicate Date/site keys
 ## -------------------------
 
-cat("\nRows in jmf_big_df:", nrow(jmf_big_df), "\n")
-cat("Rows after metadata join:", nrow(jmf_with_metadata), "\n")
+isotope_duplicate_keys <- isotopes_for_join %>%
+  count(Date, site) %>%
+  filter(n > 1)
 
-if (nrow(jmf_with_metadata) > nrow(jmf_big_df)) {
-  cat("\nWarning: joined dataframe has more rows than jmf_big_df.\n")
-  cat("This usually means duplicate Date/site rows in metadata.\n")
+cat("\nDuplicate isotope Date/site keys:", nrow(isotope_duplicate_keys), "\n")
+print(isotope_duplicate_keys, n = Inf)
+
+if (nrow(isotope_duplicate_keys) > 0) {
+  cat("\nWarning: Some isotope Date/site keys are duplicated.\n")
+  cat("The isotope join may create duplicate rows.\n")
 }
 
-## Check unmatched non-blank samples
-## Blank samples are expected not to match metadata.
-unmatched_samples <- jmf_with_metadata %>%
-  filter(site != "Blank", is.na(well_id))
 
-cat("\nUnmatched non-blank JMF samples:", nrow(unmatched_samples), "\n")
+## -------------------------
+## FULL JOIN isotope metadata by Date + site
+##
+## This keeps isotope-only rows too.
+## -------------------------
+
+jmf_with_metadata <- full_join(
+  jmf_with_metadata,
+  isotopes_for_join,
+  by = c("Date", "site")
+)
+
+
+## -------------------------
+## Post-join sanity checks
+## -------------------------
+
+cat("\nRows in JMF-only table:", nrow(jmf_big_df), "\n")
+cat("Rows in environmental metadata table:", nrow(metadata_for_join), "\n")
+cat("Rows in isotope metadata table:", nrow(isotopes_for_join), "\n")
+cat("Rows after full metadata + isotope joins:", nrow(jmf_with_metadata), "\n")
+
+
+## Rows with JMF samples but no environmental metadata
+jmf_without_env_metadata <- jmf_with_metadata %>%
+  filter(!is.na(`JMF sample ID`), site != "Blank", is.na(well_id))
+
+cat("\nJMF rows without environmental metadata:", nrow(jmf_without_env_metadata), "\n")
 
 print(
-  unmatched_samples %>%
+  jmf_without_env_metadata %>%
     select(
       dataset,
       `JMF sample ID`,
@@ -419,16 +457,82 @@ print(
   n = Inf
 )
 
-## Confirm no well_water metadata was joined
+
+## Environmental metadata rows without JMF samples
+env_metadata_without_jmf <- jmf_with_metadata %>%
+  filter(is.na(`JMF sample ID`), !is.na(well_id))
+
+cat("\nEnvironmental metadata rows without JMF samples:", nrow(env_metadata_without_jmf), "\n")
+
+print(
+  env_metadata_without_jmf %>%
+    select(
+      Date,
+      site,
+      well_id,
+      sample_type
+    ),
+  n = Inf
+)
+
+
+## JMF rows without isotope metadata
+jmf_without_isotopes <- jmf_with_metadata %>%
+  filter(!is.na(`JMF sample ID`), site != "Blank", is.na(isotope_sample_id))
+
+cat("\nJMF rows without isotope metadata:", nrow(jmf_without_isotopes), "\n")
+
+print(
+  jmf_without_isotopes %>%
+    select(
+      dataset,
+      `JMF sample ID`,
+      `Sample description`,
+      Date,
+      site,
+      act
+    ),
+  n = Inf
+)
+
+
+## Isotope rows without JMF samples
+isotopes_without_jmf <- jmf_with_metadata %>%
+  filter(is.na(`JMF sample ID`), !is.na(isotope_sample_id))
+
+cat("\nIsotope rows without JMF samples:", nrow(isotopes_without_jmf), "\n")
+
+print(
+  isotopes_without_jmf %>%
+    select(
+      Date,
+      site,
+      isotope_sample_id,
+      isotope_sample_type,
+      dO18_permil,
+      dH2_permil,
+      d_excess_permil
+    ),
+  n = Inf
+)
+
+
+## Joined sample type counts
 joined_sample_types <- jmf_with_metadata %>%
   count(sample_type)
 
-cat("\nJoined sample_type counts:\n")
+cat("\nJoined environmental sample_type counts:\n")
 print(joined_sample_types)
+
+joined_isotope_sample_types <- jmf_with_metadata %>%
+  count(isotope_sample_type)
+
+cat("\nJoined isotope sample_type counts:\n")
+print(joined_isotope_sample_types)
 
 
 ## -------------------------
-## 15) View and save final matched table
+## View and save final matched table
 ## -------------------------
 
 head(jmf_with_metadata)
@@ -437,7 +541,6 @@ View(jmf_with_metadata)
 
 write.csv(
   jmf_with_metadata,
-  "jmf_with_metadata.csv",
+  "jmf_esw_d15_with_all_metadata_and_isotopes.csv",
   row.names = FALSE
 )
-
