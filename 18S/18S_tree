@@ -304,6 +304,3 @@ fi
 
 echo
 echo "Pipeline finished successfully."
-```
-
-If you want to keep an “interactive startup” note near the top, keep it as a **comment only**, not as an executable `srun` line.
