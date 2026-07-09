@@ -1,0 +1,309 @@
+#!/usr/bin/env bash
+
+# ============================================================
+# 18S MAFFT alignment + trimAl trimming + IQ-TREE phylogeny
+#
+# Purpose:
+#   1. Align final 18S representative OTU sequences using MAFFT.
+#   2. Trim poorly aligned / gap-rich columns using trimAl.
+#   3. Build a maximum-likelihood phylogeny using IQ-TREE.
+#
+# Input:
+#   final_18S_representatives_ESW_D15_DNA800_RNA100.fasta
+#
+# Outputs:
+#   18S_MAFFT_IQTREE/18S_representatives.mafft.aligned.fasta
+#     - MAFFT multiple sequence alignment.
+#
+#   18S_MAFFT_IQTREE/18S_representatives.mafft.aligned.trimmed.fasta
+#     - trimAl-trimmed alignment used for tree inference.
+#
+#   18S_MAFFT_IQTREE/18S_IQTREE.treefile
+#     - Main maximum-likelihood tree from IQ-TREE.
+#
+#   18S_MAFFT_IQTREE/18S_IQTREE.iqtree
+#     - IQ-TREE report, including best-fit model and tree statistics.
+#
+#   18S_MAFFT_IQTREE/18S_IQTREE.log
+#     - IQ-TREE run log.
+#
+#
+#   From login node:
+#
+#     cd /scratch/tyjames_root/tyjames0/qmoon/Lobau/final_FASTA/
+#
+#     srun --pty \
+#       --account=tyjames0 \
+#       --partition=standard \
+#       --time=02:00:00 \
+#       --nodes=1 \
+#       --ntasks=1 \
+#       --cpus-per-task=8 \
+#       --mem=32G \
+#       bash
+#
+#   Then on the compute node:
+#
+#     conda activate phylo
+#     bash run_18S_mafft_trimal_iqtree.sh
+#
+
+set -euo pipefail
+
+
+# -----------------------------
+# User settings
+# -----------------------------
+
+# Input FASTA containing final 18S representative OTU sequences.
+INPUT_FASTA="final_18S_representatives_ESW_D15_DNA800_RNA100.fasta"
+
+# Output directory for alignment, trimming, and tree files.
+OUTDIR="18S_MAFFT_IQTREE"
+
+# Number of CPU threads.
+# Match this to your interactive job request:
+#   --cpus-per-task=8
+THREADS=8
+
+# MAFFT output alignment.
+ALIGNED_FASTA="${OUTDIR}/18S_representatives.mafft.aligned.fasta"
+
+# trimAl output alignment.
+TRIMMED_FASTA="${OUTDIR}/18S_representatives.mafft.aligned.trimmed.fasta"
+
+# Prefix for all IQ-TREE outputs.
+# IQ-TREE will create files like:
+#   18S_IQTREE.treefile
+#   18S_IQTREE.iqtree
+#   18S_IQTREE.log
+IQTREE_PREFIX="${OUTDIR}/18S_IQTREE"
+
+
+# -----------------------------
+# Create output directory
+# -----------------------------
+
+mkdir -p "${OUTDIR}"
+
+
+# -----------------------------
+# Remove incomplete output files from previous failed runs
+# -----------------------------
+#
+
+rm -f "${ALIGNED_FASTA}" "${TRIMMED_FASTA}"
+
+
+# -----------------------------
+# Check input FASTA
+# -----------------------------
+
+if [[ ! -s "${INPUT_FASTA}" ]]; then
+  echo "ERROR: Input FASTA not found or empty: ${INPUT_FASTA}"
+  exit 1
+fi
+
+
+# -----------------------------
+# Check required software
+# -----------------------------
+
+# Check for MAFFT.
+if ! command -v mafft >/dev/null 2>&1; then
+  echo "ERROR: mafft not found in PATH."
+  echo "Try activating your phylo environment:"
+  echo "  conda activate phylo"
+  exit 1
+fi
+
+# Check for trimAl.
+if ! command -v trimal >/dev/null 2>&1; then
+  echo "ERROR: trimal not found in PATH."
+  echo "Try activating your phylo environment:"
+  echo "  conda activate phylo"
+  exit 1
+fi
+
+# IQ-TREE may be installed as either iqtree2 or iqtree.
+if command -v iqtree2 >/dev/null 2>&1; then
+  IQTREE_CMD="iqtree2"
+elif command -v iqtree >/dev/null 2>&1; then
+  IQTREE_CMD="iqtree"
+else
+  echo "ERROR: Neither iqtree2 nor iqtree found in PATH."
+  echo "Try activating your phylo environment:"
+  echo "  conda activate phylo"
+  exit 1
+fi
+
+
+# -----------------------------
+# Print software versions
+# -----------------------------
+
+echo "============================================================"
+echo "Software"
+echo "============================================================"
+
+echo "MAFFT:"
+which mafft
+mafft --version || true
+
+echo
+echo "trimAl:"
+which trimal
+trimal --version || true
+
+echo
+echo "IQ-TREE:"
+which "${IQTREE_CMD}"
+"${IQTREE_CMD}" --version || true
+
+
+# -----------------------------
+# Print input information
+# -----------------------------
+
+echo "============================================================"
+echo "Input FASTA"
+echo "============================================================"
+
+echo "Input FASTA: ${INPUT_FASTA}"
+
+echo "Input sequence count:"
+grep -c "^>" "${INPUT_FASTA}"
+
+
+# ============================================================
+# Step 1: Run MAFFT
+# ============================================================
+#
+# --thread:
+#   Number of CPU threads to use.
+#
+# --auto:
+#   MAFFT automatically selects an appropriate alignment strategy
+#   based on dataset size.
+#
+# Output:
+#   ${ALIGNED_FASTA}
+# ============================================================
+
+echo "============================================================"
+echo "Running MAFFT"
+echo "Started: $(date)"
+echo "============================================================"
+
+mafft \
+  --thread "${THREADS}" \
+  --auto \
+  "${INPUT_FASTA}" \
+  > "${ALIGNED_FASTA}"
+
+echo "MAFFT completed: $(date)"
+echo "Aligned FASTA written to: ${ALIGNED_FASTA}"
+
+echo "Aligned sequence count:"
+grep -c "^>" "${ALIGNED_FASTA}"
+
+
+# ============================================================
+# Step 2: Run trimAl
+# ============================================================
+#
+# trimAl removes poorly aligned and/or gap-rich alignment columns.
+#
+# -automated1:
+#   Allows trimAl to automatically choose a trimming strategy.
+#
+# Output:
+#   ${TRIMMED_FASTA}
+# ============================================================
+
+echo "============================================================"
+echo "Running trimAl"
+echo "Started: $(date)"
+echo "============================================================"
+
+trimal \
+  -in "${ALIGNED_FASTA}" \
+  -out "${TRIMMED_FASTA}" \
+  -automated1
+
+echo "trimAl completed: $(date)"
+echo "Trimmed FASTA written to: ${TRIMMED_FASTA}"
+
+echo "Trimmed sequence count:"
+grep -c "^>" "${TRIMMED_FASTA}"
+
+
+# ============================================================
+# Step 3: Run IQ-TREE
+# ============================================================
+#
+# -s:
+#   Input alignment.
+#
+# -m MFP:
+#   Use ModelFinder Plus to choose the best-fit substitution model.
+#
+# -B 1000:
+#   Run 1000 ultrafast bootstrap replicates.
+#
+# -alrt 1000:
+#   Run 1000 SH-aLRT branch support replicates.
+#
+# -nt:
+#   Number of CPU threads.
+#
+# -pre:
+#   Prefix for IQ-TREE output files.
+#
+# Main output:
+#   ${IQTREE_PREFIX}.treefile
+# ============================================================
+
+echo "============================================================"
+echo "Running IQ-TREE"
+echo "Started: $(date)"
+echo "============================================================"
+
+"${IQTREE_CMD}" \
+  -s "${TRIMMED_FASTA}" \
+  -m MFP \
+  -B 1000 \
+  -alrt 1000 \
+  -nt "${THREADS}" \
+  -pre "${IQTREE_PREFIX}"
+
+echo "IQ-TREE completed: $(date)"
+
+
+# ============================================================
+# Final output summary
+# ============================================================
+
+echo "============================================================"
+echo "Done"
+echo "============================================================"
+
+echo
+echo "Output directory contents:"
+ls -lh "${OUTDIR}"
+
+echo
+echo "Main tree file:"
+echo "${IQTREE_PREFIX}.treefile"
+
+if [[ -s "${IQTREE_PREFIX}.iqtree" ]]; then
+  echo
+  echo "Best-fit model:"
+  grep -i "Best-fit model" "${IQTREE_PREFIX}.iqtree" || true
+fi
+
+echo
+echo "Pipeline finished successfully."
+```
+
+If you want to keep an “interactive startup” note near the top, keep it as a **comment only**, not as an executable `srun` line.
